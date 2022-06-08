@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Linq;
 using System.Net;
 using System.Text;
 using CodeBase.Utils;
@@ -19,14 +20,9 @@ namespace CodeBase.Services.Events
             _saveLoadEventsService = saveLoadEventsService;
             _cooldownBeforeSend = Constants.SendRequestCooldown;
             _eventsContainer = _saveLoadEventsService.Load();
-            _eventsContainer.events ??= new EventsList();
+            _eventsContainer.storedEvents ??= new EventsList();
 
-            if (_eventsContainer.sendingEvents?.events.Count > 0)
-            {
-                _eventsContainer.sendingEvents.events.AddRange(_eventsContainer.events.events);
-                _eventsContainer.events = _eventsContainer.sendingEvents.events.ToEventsList();
-                _eventsContainer.sendingEvents = null;
-            }
+            _eventsContainer.ReturnSendingEvents();
 
             StartCoroutine(SendingRequestRoutine());
         }
@@ -34,7 +30,7 @@ namespace CodeBase.Services.Events
         public void TrackEvent(string type, string data)
         {
             var eventData = new EventData {type = type, data = data};
-            _eventsContainer.events.events.Add(eventData);
+            _eventsContainer.storedEvents.events.Add(eventData);
             _saveLoadEventsService.Save(_eventsContainer);
         }
 
@@ -42,7 +38,7 @@ namespace CodeBase.Services.Events
         {
             while (true)
             {
-                yield return new WaitUntil(() => _sendingCoroutine == null && _eventsContainer.events.events.Count > 0);
+                yield return new WaitUntil(() => _sendingCoroutine == null && _eventsContainer.storedEvents.events.Count > 0);
                 _sendingCoroutine = StartCoroutine(SendingEventsToServer());
                 yield return new WaitForSeconds(_cooldownBeforeSend);
             }
@@ -51,21 +47,20 @@ namespace CodeBase.Services.Events
         private IEnumerator SendingEventsToServer()
         {
             var request = new UnityWebRequest(Constants.ServerURL, "POST");
-            var bodyRaw = new UTF8Encoding().GetBytes(JsonUtility.ToJson(_eventsContainer.events));
+            var bodyRaw = new UTF8Encoding().GetBytes(JsonUtility.ToJson(_eventsContainer.storedEvents));
             request.uploadHandler = new UploadHandlerRaw(bodyRaw);
             request.downloadHandler = new DownloadHandlerBuffer();
             request.SetRequestHeader("Content-Type", "application/json");
 
-            _eventsContainer.sendingEvents = _eventsContainer.events.events.ToEventsList();
-            _eventsContainer.events.events.Clear();
+            _eventsContainer.sendingEvents = _eventsContainer.storedEvents.events.ToEventsList();
+            _eventsContainer.storedEvents.events.Clear();
             _saveLoadEventsService.Save(_eventsContainer);
 
             yield return request.SendWebRequest();
 
             if (request.responseCode != (int) HttpStatusCode.OK)
             {
-                _eventsContainer.sendingEvents.events.AddRange(_eventsContainer.events.events);
-                _eventsContainer.events = _eventsContainer.sendingEvents.events.ToEventsList();
+                _eventsContainer.ReturnSendingEvents();
                 Debug.LogError($"Sending event failed with code: {request.responseCode}");
             }
             else
